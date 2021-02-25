@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::Mutex;
+use std::{ops::Deref, sync::Arc};
 
 type Buf<T> = Arc<T>;
 struct ReadUpdate<T> {
@@ -64,31 +64,36 @@ impl<T> Writer<T> {
         buf
     }
 
-    pub fn write_thread(&mut self, mut write_op: impl FnMut(&T, &mut T)) {
-        loop {
-            let new_state = {
-                // This Arc will have no other clones at this point,
-                // so we can get a mutable reference into it.
-                let mut unused_buf = self.get_unused_buffer();
+    pub fn update(&mut self, mut write_op: impl FnMut(&T, &mut T)) {
+        // This Arc will have no other clones at this point,
+        // so we can get a mutable reference into it.
+        let mut new_state = self.get_unused_buffer();
 
-                let mut_ref = Arc::get_mut(&mut unused_buf).unwrap();
-                write_op(&self.prev_buf, mut_ref);
+        let mut_ref = Arc::get_mut(&mut new_state).unwrap();
+        write_op(&self.prev_buf, mut_ref);
 
-                unused_buf
-            };
-
-            let unused_old_read = self.read_update.replace(new_state.clone());
-            self.prev_buf = new_state;
-            self.unused_bufs.push(unused_old_read);
-        }
+        let unused_old_read = self.read_update.replace(new_state.clone());
+        self.prev_buf = new_state;
+        self.unused_bufs.push(unused_old_read);
     }
 }
 
 impl<T> Reader<T> {
-    pub fn read_thread(&mut self, mut read_op: impl FnMut(&T)) {
-        loop {
-            let cur_state = self.read_update.get();
-            read_op(&cur_state);
+    pub fn get_newest(&self) -> ReadState<T> {
+        ReadState {
+            buf: self.read_update.get(),
         }
+    }
+}
+
+pub struct ReadState<T> {
+    buf: Buf<T>,
+}
+
+impl<T> Deref for ReadState<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.buf
     }
 }
