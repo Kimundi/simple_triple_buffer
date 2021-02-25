@@ -23,7 +23,7 @@ impl<T> ReadUpdate<T> {
 }
 
 pub struct Writer<T> {
-    make_buf: Box<dyn FnMut(&T) -> T>,
+    make_buf: Box<dyn FnMut(&T) -> T + Send>,
     unused_bufs_rx: Receiver<Buf<T>>,
 
     prev_buf: Buf<T>,
@@ -39,7 +39,7 @@ pub struct Reader<T> {
 
 pub fn new_buffer_with<T>(
     init: T,
-    make_buf: impl FnMut(&T) -> T + 'static,
+    make_buf: impl FnMut(&T) -> T + 'static + Send,
 ) -> (Writer<T>, Reader<T>) {
     let w = Writer::new(init, make_buf);
     let r = Reader {
@@ -57,7 +57,7 @@ pub fn new_buffer_clone<T: Clone>(init: T) -> (Writer<T>, Reader<T>) {
 }
 
 impl<T> Writer<T> {
-    fn new(init: T, make_buf: impl FnMut(&T) -> T + 'static) -> Self {
+    fn new(init: T, make_buf: impl FnMut(&T) -> T + 'static + Send) -> Self {
         let prev_buf = Arc::new(init);
         let make_buf = Box::new(make_buf);
         let read_update = ReadUpdate::new();
