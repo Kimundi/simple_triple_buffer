@@ -19,7 +19,7 @@ impl<T> ReadUpdate<T> {
     fn replace(&self, v: Buf<T>) -> Option<Buf<T>> {
         std::mem::replace(&mut self.shared.lock().unwrap(), Some(v))
     }
-    fn get(&self) -> Option<Buf<T>> {
+    fn take(&self) -> Option<Buf<T>> {
         self.shared.lock().unwrap().take()
     }
 }
@@ -83,7 +83,7 @@ impl<T> Writer<T> {
         }
     }
 
-    fn get_unused_buffer(&mut self) -> Buf<T> {
+    fn next_unused_buffer(&mut self) -> Buf<T> {
         if let Some(buf) = self.unused_bufs_rx.try_recv().ok() {
             debug_assert!(Arc::strong_count(&buf) == 1);
             debug_assert!(Arc::weak_count(&buf) == 0);
@@ -111,7 +111,7 @@ impl<T> Writer<T> {
     /// assert_eq!(*reader.read_newest(), 1);
     /// ````
     pub fn write_new(&mut self, mut write_op: impl FnMut(&T, &mut T)) {
-        let mut new_state = self.get_unused_buffer();
+        let mut new_state = self.next_unused_buffer();
 
         // This Arc will have no other clones at this point,
         // so we can get a mutable reference into it.
@@ -149,7 +149,7 @@ impl<T> Reader<T> {
     /// assert_eq!(*guard, 1);
     /// ````
     pub fn read_newest(&mut self) -> &T {
-        match self.read_update.get() {
+        match self.read_update.take() {
             Some(new_buf) => {
                 let now_unused_buf = std::mem::replace(&mut self.prev_buf, new_buf);
                 self.unused_bufs_tx.send(now_unused_buf).unwrap();
