@@ -1,8 +1,10 @@
+#![warn(rust_2018_idioms)]
+
+use std::sync::Arc;
 use std::sync::{
     mpsc::{channel, Receiver, Sender},
     Mutex,
 };
-use std::{ops::Deref, sync::Arc};
 
 type Buf<T> = Arc<T>;
 struct ReadUpdate<T> {
@@ -126,8 +128,9 @@ impl<T> Writer<T> {
 impl<T> Reader<T> {
     /// Get a view to the newest state currently in the buffer.
     ///
-    /// The `Writer` is not blocked while the `ReadState` exists,
-    /// but the value reachable via it will not change until it is dropped.
+    /// The `Writer` is not blocked while the returned borrow is held,
+    /// but any new written data will only be visible by calling
+    /// this method again.
     ///
     /// It is possible for multiple write updates to happen
     /// while a single read is in process.
@@ -145,31 +148,15 @@ impl<T> Reader<T> {
     /// let guard = reader.read_newest();
     /// assert_eq!(*guard, 1);
     /// ````
-    pub fn read_newest(&mut self) -> ReadState<'_, T> {
+    pub fn read_newest(&mut self) -> &T {
         match self.read_update.get() {
             Some(new_buf) => {
                 let now_unused_buf = std::mem::replace(&mut self.prev_buf, new_buf);
                 self.unused_bufs_tx.send(now_unused_buf).unwrap();
-                ReadState {
-                    buf: &self.prev_buf,
-                }
+                &self.prev_buf
             }
-            None => ReadState {
-                buf: &self.prev_buf,
-            },
+            None => &self.prev_buf,
         }
-    }
-}
-
-pub struct ReadState<'a, T> {
-    buf: &'a Buf<T>,
-}
-
-impl<T> Deref for ReadState<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.buf
     }
 }
 

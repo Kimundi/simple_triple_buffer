@@ -1,3 +1,6 @@
+# Example
+
+```rust
 #[derive(Clone)]
 struct State {
     v: u64,
@@ -32,3 +35,4 @@ fn main() {
     tw.join().unwrap();
     tr.join().unwrap();
 }
+```
