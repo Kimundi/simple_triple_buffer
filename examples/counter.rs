@@ -5,10 +5,10 @@ struct State {
 
 use std::time::Duration;
 
-use simple_triple_buffer::new_with;
+use simple_triple_buffer::TripleBuffer;
 
 fn main() {
-    let (mut w, mut r) = new_with(State { v: 0 }, |s| {
+    let (mut w, mut r) = TripleBuffer::new_with(State { v: 0 }, |s| {
         println!("Cloned state!");
         s.clone()
     });

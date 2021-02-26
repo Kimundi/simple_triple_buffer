@@ -1,78 +1,116 @@
 #![warn(rust_2018_idioms)]
 
-use std::sync::Arc;
 use std::sync::{
     mpsc::{channel, Receiver, Sender},
     Mutex,
 };
+use std::{marker::PhantomData, sync::Arc};
 
-type Buf<T> = Arc<T>;
-struct ReadUpdate<T> {
-    shared: Arc<Mutex<Option<Buf<T>>>>,
+pub trait UpdateStrategy {
+    type Data;
+
+    fn new() -> Self;
+    fn replace(&self, v: Buf<Self::Data>) -> Option<Buf<Self::Data>>;
+    fn take(&self) -> Option<Buf<Self::Data>>;
 }
-impl<T> ReadUpdate<T> {
+
+pub struct StdMutexUpdate<T> {
+    data: Mutex<Option<Buf<T>>>,
+}
+impl<T> UpdateStrategy for StdMutexUpdate<T> {
+    type Data = T;
+
     fn new() -> Self {
         Self {
-            shared: Arc::new(Mutex::new(None)),
+            data: Mutex::new(None),
         }
     }
     fn replace(&self, v: Buf<T>) -> Option<Buf<T>> {
-        std::mem::replace(&mut self.shared.lock().unwrap(), Some(v))
+        std::mem::replace(&mut self.data.lock().unwrap(), Some(v))
     }
-    fn get(&self) -> Option<Buf<T>> {
-        self.shared.lock().unwrap().take()
+    fn take(&self) -> Option<Buf<T>> {
+        self.data.lock().unwrap().take()
     }
 }
 
+pub struct SpinMutexUpdate<T> {
+    data: spin_sync::Mutex<Option<Buf<T>>>,
+}
+impl<T> UpdateStrategy for SpinMutexUpdate<T> {
+    type Data = T;
+
+    fn new() -> Self {
+        Self {
+            data: spin_sync::Mutex::new(None),
+        }
+    }
+    fn replace(&self, v: Buf<T>) -> Option<Buf<T>> {
+        std::mem::replace(&mut self.data.lock().unwrap(), Some(v))
+    }
+    fn take(&self) -> Option<Buf<T>> {
+        self.data.lock().unwrap().take()
+    }
+}
+
+pub type Buf<T> = Arc<T>;
+pub type DefaultUpdate<T> = StdMutexUpdate<T>;
+
 /// Write side of the triple buffer.
-pub struct Writer<T> {
+pub struct Writer<T, S> {
     make_buf: Box<dyn FnMut(&T) -> T + Send>,
     unused_bufs_rx: Receiver<Buf<T>>,
 
     prev_buf: Buf<T>,
     unused_bufs_tx: Sender<Buf<T>>,
-    read_update: ReadUpdate<T>,
+    read_update: Arc<S>,
 }
 
 /// Read side of the triple buffer.
-pub struct Reader<T> {
+pub struct Reader<T, S> {
     prev_buf: Buf<T>,
     unused_bufs_tx: Sender<Buf<T>>,
-    read_update: ReadUpdate<T>,
+    read_update: Arc<S>,
 }
 
-/// Create a new buffer pair that creates additional
-/// buffer instances with a custom clone function.
-///
-/// The number of copies of T will reach a steady state around 2-4.
-pub fn new_with<T>(
-    init: T,
-    make_buf: impl FnMut(&T) -> T + 'static + Send,
-) -> (Writer<T>, Reader<T>) {
-    let w = Writer::new(init, make_buf);
-    let r = Reader {
-        prev_buf: w.prev_buf.clone(),
-        unused_bufs_tx: w.unused_bufs_tx.clone(),
-        read_update: ReadUpdate {
-            shared: w.read_update.shared.clone(),
-        },
-    };
-    (w, r)
+pub struct TripleBuffer<T, S = DefaultUpdate<T>> {
+    _marker: PhantomData<(T, S)>,
 }
 
-/// Create a new buffer pair that creates additional
-/// buffer instances by cloning a previous state.
-///
-/// The number of copies of T will reach a steady state around 2-4.
-pub fn new_clone<T: Clone>(init: T) -> (Writer<T>, Reader<T>) {
-    new_with(init, |v| v.clone())
+impl<T, S: UpdateStrategy<Data = T>> TripleBuffer<T, S> {
+    /// Create a new buffer pair that creates additional
+    /// buffer instances with a custom clone function.
+    ///
+    /// The number of copies of T will reach a steady state around 2-4.
+    pub fn new_with(
+        init: T,
+        make_buf: impl FnMut(&T) -> T + 'static + Send,
+    ) -> (Writer<T, S>, Reader<T, S>) {
+        let w = Writer::new(init, make_buf);
+        let r = Reader {
+            prev_buf: w.prev_buf.clone(),
+            unused_bufs_tx: w.unused_bufs_tx.clone(),
+            read_update: Arc::clone(&w.read_update),
+        };
+        (w, r)
+    }
+
+    /// Create a new buffer pair that creates additional
+    /// buffer instances by cloning a previous state.
+    ///
+    /// The number of copies of T will reach a steady state around 2-4.
+    pub fn new_clone(init: T) -> (Writer<T, S>, Reader<T, S>)
+    where
+        T: Clone,
+    {
+        Self::new_with(init, |v| v.clone())
+    }
 }
 
-impl<T> Writer<T> {
+impl<T, S: UpdateStrategy<Data = T>> Writer<T, S> {
     fn new(init: T, make_buf: impl FnMut(&T) -> T + 'static + Send) -> Self {
         let prev_buf = Arc::new(init);
         let make_buf = Box::new(make_buf);
-        let read_update = ReadUpdate::new();
+        let read_update = Arc::new(S::new());
         let (unused_bufs_tx, unused_bufs_rx) = channel();
         Self {
             prev_buf,
@@ -125,7 +163,7 @@ impl<T> Writer<T> {
     }
 }
 
-impl<T> Reader<T> {
+impl<T, S: UpdateStrategy<Data = T>> Reader<T, S> {
     /// Get a view to the newest state currently in the buffer.
     ///
     /// The `Writer` is not blocked while the returned borrow is held,
@@ -149,7 +187,7 @@ impl<T> Reader<T> {
     /// assert_eq!(*guard, 1);
     /// ````
     pub fn read_newest(&mut self) -> &T {
-        match self.read_update.get() {
+        match self.read_update.take() {
             Some(new_buf) => {
                 let now_unused_buf = std::mem::replace(&mut self.prev_buf, new_buf);
                 self.unused_bufs_tx.send(now_unused_buf).unwrap();
@@ -181,7 +219,7 @@ mod tests {
     fn test_seq_1() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_with(0, move |i| {
+        let (mut w, mut r) = TripleBuffer::new_with(0, move |i| {
             count(&c2);
             *i
         });
@@ -197,7 +235,7 @@ mod tests {
     fn test_long_overlapping_read() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_with(0, move |i| {
+        let (mut w, mut r) = TripleBuffer::new_with(0, move |i| {
             count(&c2);
             *i
         });
@@ -233,7 +271,7 @@ mod tests {
     fn test_long_overlapping_write() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_with(0, move |i| {
+        let (mut w, mut r) = TripleBuffer::new_with(0, move |i| {
             count(&c2);
             *i
         });
