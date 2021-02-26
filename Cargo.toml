@@ -10,7 +10,7 @@ readme = "README.md"
 documentation = "https://docs.rs/simple_triple_buffer"
 
 repository = "https://github.com/Kimundi/simple_triple_buffer"
-keywords = ["double buffer", "triple buffer"]
+keywords = ["double", "triple", "buffer"]
 categories = [ ]
 exclude = ["/.travis.yml", "/appveyor.yml"]
 
