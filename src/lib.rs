@@ -1,26 +1,26 @@
 #![warn(rust_2018_idioms)]
 
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::sync::{
-    mpsc::{channel, Receiver, Sender},
-    Mutex,
-};
+
+use arc_swap::ArcSwapOption;
 
 type Buf<T> = Arc<T>;
+
 struct ReadUpdate<T> {
-    shared: Arc<Mutex<Option<Buf<T>>>>,
+    shared: Arc<ArcSwapOption<T>>,
 }
 impl<T> ReadUpdate<T> {
     fn new() -> Self {
         Self {
-            shared: Arc::new(Mutex::new(None)),
+            shared: Arc::new(ArcSwapOption::from(None)),
         }
     }
     fn replace(&self, v: Buf<T>) -> Option<Buf<T>> {
-        std::mem::replace(&mut self.shared.lock().unwrap(), Some(v))
+        self.shared.swap(Some(v))
     }
-    fn get(&self) -> Option<Buf<T>> {
-        self.shared.lock().unwrap().take()
+    fn take(&self) -> Option<Buf<T>> {
+        self.shared.swap(None)
     }
 }
 
@@ -149,7 +149,7 @@ impl<T> Reader<T> {
     /// assert_eq!(*guard, 1);
     /// ````
     pub fn read_newest(&mut self) -> &T {
-        match self.read_update.get() {
+        match self.read_update.take() {
             Some(new_buf) => {
                 let now_unused_buf = std::mem::replace(&mut self.prev_buf, new_buf);
                 self.unused_bufs_tx.send(now_unused_buf).unwrap();
@@ -162,6 +162,8 @@ impl<T> Reader<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     fn measure() -> [Arc<Mutex<usize>>; 2] {
