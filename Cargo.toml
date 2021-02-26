@@ -1,9 +1,23 @@
 [package]
-name = "triple-sim"
+name = "simple-triple-buffer"
 version = "0.1.0"
 authors = ["Marvin Löbel <loebel.marvin@gmail.com>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+
+description = "A simple triple buffer."
+readme = "README.md"
+documentation = "https://docs.rs/simple_triple_buffer"
+
+repository = "https://github.com/Kimundi/simple_triple_buffer"
+keywords = ["double buffer", "triple buffer"]
+categories = [ ]
+exclude = ["/.travis.yml", "/appveyor.yml"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+
+[badges]
+
+maintenance = { status = "as-is" }

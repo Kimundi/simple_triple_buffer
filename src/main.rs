@@ -5,7 +5,7 @@ struct State {
 
 use std::time::Duration;
 
-use triple_sim::new_buffer_with;
+use simple_triple_buffer::new_buffer_with;
 
 fn main() {
     let (mut w, mut r) = new_buffer_with(State { v: 0 }, |s| {
