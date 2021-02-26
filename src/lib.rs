@@ -22,6 +22,7 @@ impl<T> ReadUpdate<T> {
     }
 }
 
+/// Write side of the triple buffer.
 pub struct Writer<T> {
     make_buf: Box<dyn FnMut(&T) -> T + Send>,
     unused_bufs_rx: Receiver<Buf<T>>,
@@ -31,13 +32,18 @@ pub struct Writer<T> {
     read_update: ReadUpdate<T>,
 }
 
+/// Read side of the triple buffer.
 pub struct Reader<T> {
     prev_buf: Buf<T>,
     unused_bufs_tx: Sender<Buf<T>>,
     read_update: ReadUpdate<T>,
 }
 
-pub fn new_buffer_with<T>(
+/// Create a new buffer pair that creates additional
+/// buffer instances with a custom clone function.
+///
+/// The number of copies of T will reach a steady state around 2-4.
+pub fn new_with<T>(
     init: T,
     make_buf: impl FnMut(&T) -> T + 'static + Send,
 ) -> (Writer<T>, Reader<T>) {
@@ -52,8 +58,12 @@ pub fn new_buffer_with<T>(
     (w, r)
 }
 
-pub fn new_buffer_clone<T: Clone>(init: T) -> (Writer<T>, Reader<T>) {
-    new_buffer_with(init, |v| v.clone())
+/// Create a new buffer pair that creates additional
+/// buffer instances by cloning a previous state.
+///
+/// The number of copies of T will reach a steady state around 2-4.
+pub fn new_clone<T: Clone>(init: T) -> (Writer<T>, Reader<T>) {
+    new_with(init, |v| v.clone())
 }
 
 impl<T> Writer<T> {
@@ -81,11 +91,28 @@ impl<T> Writer<T> {
         Arc::new(new_state)
     }
 
-    pub fn update(&mut self, mut write_op: impl FnMut(&T, &mut T)) {
-        // This Arc will have no other clones at this point,
-        // so we can get a mutable reference into it.
+    /// Write the next state into the buffer.
+    ///
+    /// The closure takes two arguments:
+    /// - The first is a reference to the previous state.
+    /// - The second is a mutable reference to some unspecified
+    ///   `T` value that should be overwritten with the new state.
+    ///
+    /// The `Reader` is not blocked while this function runs.
+    /// It is possible for multiple independent reads to happen
+    /// while a single write is in process.
+    ///
+    /// # Example
+    /// ```
+    /// let (mut writer, mut reader) = simple_triple_buffer::new_clone(0);
+    /// writer.write_new(|old, new| *new = *old + 1);
+    /// assert_eq!(*reader.read_newest(), 1);
+    /// ````
+    pub fn write_new(&mut self, mut write_op: impl FnMut(&T, &mut T)) {
         let mut new_state = self.get_unused_buffer();
 
+        // This Arc will have no other clones at this point,
+        // so we can get a mutable reference into it.
         let mut_ref = Arc::get_mut(&mut new_state).unwrap();
         write_op(&self.prev_buf, mut_ref);
 
@@ -97,7 +124,28 @@ impl<T> Writer<T> {
 }
 
 impl<T> Reader<T> {
-    pub fn newest(&mut self) -> ReadState<'_, T> {
+    /// Get a view to the newest state currently in the buffer.
+    ///
+    /// The `Writer` is not blocked while the `ReadState` exists,
+    /// but the value reachable via it will not change until it is dropped.
+    ///
+    /// It is possible for multiple write updates to happen
+    /// while a single read is in process.
+    ///
+    /// # Example
+    /// ```
+    /// let (mut writer, mut reader) = simple_triple_buffer::new_clone(0);
+    ///
+    /// let guard = reader.read_newest();
+    /// assert_eq!(*guard, 0);
+    /// writer.write_new(|old, new| *new = *old + 1);
+    /// assert_eq!(*guard, 0);
+    /// drop(guard);
+    ///
+    /// let guard = reader.read_newest();
+    /// assert_eq!(*guard, 1);
+    /// ````
+    pub fn read_newest(&mut self) -> ReadState<'_, T> {
         match self.read_update.get() {
             Some(new_buf) => {
                 let now_unused_buf = std::mem::replace(&mut self.prev_buf, new_buf);
@@ -146,15 +194,15 @@ mod tests {
     fn test_seq_1() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_buffer_with(0, move |i| {
+        let (mut w, mut r) = new_with(0, move |i| {
             count(&c2);
             *i
         });
-        assert_eq!(*r.newest(), 0);
-        w.update(|old, new| {
+        assert_eq!(*r.read_newest(), 0);
+        w.write_new(|old, new| {
             *new = *old + 1;
         });
-        assert_eq!(*r.newest(), 1);
+        assert_eq!(*r.read_newest(), 1);
         assert!(final_count(&c) <= 2);
     }
 
@@ -162,35 +210,35 @@ mod tests {
     fn test_long_overlapping_read() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_buffer_with(0, move |i| {
+        let (mut w, mut r) = new_with(0, move |i| {
             count(&c2);
             *i
         });
         {
-            let r = r.newest();
+            let r = r.read_newest();
             assert_eq!(*r, 0);
-            w.update(|old, new| {
+            w.write_new(|old, new| {
                 *new = *old + 1;
             });
             assert_eq!(*r, 0);
-            w.update(|old, new| {
+            w.write_new(|old, new| {
                 *new = *old + 1;
             });
             assert_eq!(*r, 0);
-            w.update(|old, new| {
+            w.write_new(|old, new| {
                 *new = *old + 1;
             });
             assert_eq!(*r, 0);
-            w.update(|old, new| {
+            w.write_new(|old, new| {
                 *new = *old + 1;
             });
             assert_eq!(*r, 0);
-            w.update(|old, new| {
+            w.write_new(|old, new| {
                 *new = *old + 1;
             });
             assert_eq!(*r, 0);
         }
-        assert_eq!(*r.newest(), 5);
+        assert_eq!(*r.read_newest(), 5);
         assert!(final_count(&c) <= 2);
     }
 
@@ -198,20 +246,20 @@ mod tests {
     fn test_long_overlapping_write() {
         let [c, c2] = measure();
 
-        let (mut w, mut r) = new_buffer_with(0, move |i| {
+        let (mut w, mut r) = new_with(0, move |i| {
             count(&c2);
             *i
         });
 
-        w.update(|old, new| {
-            assert_eq!(*r.newest(), 0);
-            assert_eq!(*r.newest(), 0);
-            assert_eq!(*r.newest(), 0);
-            assert_eq!(*r.newest(), 0);
-            assert_eq!(*r.newest(), 0);
+        w.write_new(|old, new| {
+            assert_eq!(*r.read_newest(), 0);
+            assert_eq!(*r.read_newest(), 0);
+            assert_eq!(*r.read_newest(), 0);
+            assert_eq!(*r.read_newest(), 0);
+            assert_eq!(*r.read_newest(), 0);
             *new = *old + 1;
         });
-        assert_eq!(*r.newest(), 1);
+        assert_eq!(*r.read_newest(), 1);
 
         assert!(final_count(&c) <= 2);
     }

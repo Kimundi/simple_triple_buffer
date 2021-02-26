@@ -5,23 +5,23 @@ struct State {
 
 use std::time::Duration;
 
-use simple_triple_buffer::new_buffer_with;
+use simple_triple_buffer::new_with;
 
 fn main() {
-    let (mut w, mut r) = new_buffer_with(State { v: 0 }, |s| {
+    let (mut w, mut r) = new_with(State { v: 0 }, |s| {
         println!("Clone!");
         s.clone()
     });
 
     let tw = std::thread::spawn(move || loop {
-        w.update(|last, new| {
+        w.write_new(|last, new| {
             new.v = last.v + 1;
         });
     });
     let tr = std::thread::spawn(move || {
         let mut last = 0;
         loop {
-            let state = r.newest();
+            let state = r.read_newest();
             println!("Value: {} (+{})", state.v, state.v - last);
             last = state.v;
             std::thread::sleep(Duration::from_millis(20));
