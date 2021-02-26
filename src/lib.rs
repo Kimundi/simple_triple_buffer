@@ -141,6 +141,7 @@ impl<T> Reader<T> {
     ///
     /// let guard = reader.read_newest();
     /// assert_eq!(*guard, 0);
+    ///
     /// writer.write_new(|old, new| *new = *old + 1);
     /// assert_eq!(*guard, 0);
     ///
